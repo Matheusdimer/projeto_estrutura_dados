@@ -18,6 +18,14 @@ list<Livro *> livros;
 list<Emprestimo *> emprestimos;
 list<Associado *> associados;
 
+list<Livro *> livrosMaisEmprestados;
+int num_emprestimos_relatorio1[10];
+int relatorio_aux1 = 0;
+
+list<Associado *> associadosMaisEmprestimos;
+int num_emprestimos_relatorio2[10];
+int relatorio_aux2 = 0;
+
 static int sql_callback(void *table, int field_number, char **column_data, char **column_name)
 {
     if (table_index != -1)
@@ -32,6 +40,15 @@ static int sql_callback(void *table, int field_number, char **column_data, char 
             break;
         case 2:
             associados.push_back(new Associado(column_data));
+            break;
+        case 3:
+            livrosMaisEmprestados.push_back(new Livro(column_data));
+            num_emprestimos_relatorio1[relatorio_aux1++] = atoi(column_data[7]);
+            break;
+        case 4:
+            associadosMaisEmprestimos.push_back(new Associado(column_data));
+            num_emprestimos_relatorio2[relatorio_aux2++] = atoi(column_data[6]);
+            break;
         default:
             break;
         }
@@ -51,6 +68,7 @@ public:
     Database();
     void findAll(int table);
     void execute(string statement);
+    void execute(string statement, int op);
     void execSql(string sql);
 };
 
@@ -83,6 +101,13 @@ void Database::execute(string statement)
     this->execSql(statement);
 }
 
+void Database::execute(string statement, int op)
+{
+    table_index = op;
+
+    this->execSql(statement);
+}
+
 void Database::execSql(string s)
 {
     char sql[210];
@@ -96,6 +121,74 @@ void Database::execSql(string s)
         sqlite3_free(zErrMsg);
     }
 }
+
+class Relatorio
+{
+private:
+    Database* db;
+
+public:
+    Relatorio(Database *database)
+    {
+        this->db = database;
+    }
+
+    void LivrosMaisEmprestados()
+    {
+        int aux = 0;
+
+        string query = "SELECT LIVRO.*, count(Emprestimo.id) AS NUM_EMPRESTIMOS FROM Livro ";
+        query += "INNER JOIN Emprestimo ON Emprestimo.id_livro = Livro.id ";
+        query += "GROUP BY Livro.ID ";
+        query += "ORDER BY NUM_EMPRESTIMOS DESC ";
+        query += "LIMIT 10";
+        
+        livrosMaisEmprestados.clear();
+
+        relatorio_aux1 = 0;
+        db->execute(query, 3);
+
+        cout << "\033[1;31m";
+        printElement("N. Emprestimos", 20);
+        Livro::header();
+
+        for (auto const &livro : livrosMaisEmprestados)
+        {
+            printElement(num_emprestimos_relatorio1[aux++], 20);
+            livro->print();
+        }
+
+        cout << endl;
+    }
+
+    void AssociadosMaisEmprestimos()
+    {
+        int aux = 0;
+
+        string query = "SELECT Associado.*, count(Emprestimo.id) AS NUM_EMPRESTIMOS from Associado ";
+        query += "INNER JOIN Emprestimo ON Emprestimo.id_associado = Associado.id ";
+        query += "GROUP BY Associado.ID ";
+        query += "ORDER BY NUM_EMPRESTIMOS DESC ";
+        query += "LIMIT 10";
+
+        associadosMaisEmprestimos.clear();
+        
+        relatorio_aux2 = 0;
+        db->execute(query, 4);
+
+        cout << "\033[1;31m";
+        printElement("N. Emprestimos", 20);
+        Associado::header();
+
+        for (auto const &associado : associadosMaisEmprestimos)
+        {
+            printElement(num_emprestimos_relatorio2[aux++], 20);
+            associado->print();
+        }
+
+        cout << endl;
+    }
+};
 
 void clear()
 {
@@ -163,6 +256,8 @@ void cadastrarLivro(Database *database)
 
     cout << ("Código ISBN: ");
     cin >> livro->isbn;
+
+    cin.get();
 
     if (hasLivroSameIsbn(livro))
     {
@@ -373,13 +468,23 @@ void cadastrarEmprestimo(Database *database)
 
     if (hasExemplaresDisponiveis(emprestimo->livro))
     {
-        cout << "Digite a data de retirada(dd-mm-aaaa): ";
-        cin >> emprestimo->dataEmprestimo;
+        if (emprestimo->associado->numero_emprestimos < 3)
+        {
+            cout << "Digite a data de retirada(dd-mm-aaaa): ";
+            cin >> emprestimo->dataEmprestimo;
 
-        database->execute(emprestimo->save());
-        emprestimos.push_back(emprestimo);
+            emprestimo->associado->numero_emprestimos++;
 
-        cout << "Empréstimo cadastrado com sucesso!";
+            database->execute(emprestimo->associado->updateNumeroEmprestimos());
+            database->execute(emprestimo->save());
+            emprestimos.push_back(emprestimo);
+
+            cout << "Empréstimo cadastrado com sucesso!";
+        }
+        else
+        {
+            cout << "Associado estourou o limite de empréstimos disponíveis.";
+        }
     }
     else
     {
@@ -391,7 +496,7 @@ void devolverLivro(Database *database)
 {
     int id;
 
-    Listagem::Livros();
+    Listagem::Emprestimos();
 
     cin.get();
 
@@ -409,6 +514,10 @@ void devolverLivro(Database *database)
         cin >> emprestimo->dataDevolucao;
 
         database->execute(emprestimo->updateDataDevolucao());
+
+        emprestimo->associado->numero_emprestimos--;
+
+        database->execute(emprestimo->associado->updateNumeroEmprestimos());
         cout << "Devolução concluída com sucesso!\n";
     }
     else
@@ -433,6 +542,9 @@ void excluirLivro(Database *database)
         if (!Finder::livroHasEmprestimos(database, livro))
         {
             database->execute(livro->deleteEntity());
+            livros.remove(livro);
+
+            cout << "Livro excluido com sucesso!" << endl;
         }
         else
         {
@@ -451,7 +563,7 @@ void excluirAssociado(Database *database)
 
     int id;
 
-    cout << "Digite o nome do associado que deseja excluir: ";
+    cout << "Digite o id do associado que deseja excluir: ";
     cin >> id;
 
     Associado *associado = Finder::associado(id);
@@ -461,6 +573,9 @@ void excluirAssociado(Database *database)
         if (!Finder::associadoHasEmprestimos(database, associado))
         {
             database->execute(associado->deleteEntity());
+            associados.remove(associado);
+
+            cout << "Associado excluido com sucesso!" << endl;
         }
         else
         {
@@ -475,7 +590,14 @@ void excluirAssociado(Database *database)
 
 void menuPrincipal()
 {
-    cout << "\nMenu de Opções:\n\t1. Listagem\n\t2. Cadastros\n\t3. Devolução de empréstimo\n\t4. Exclusão de dados\n\t5. Sair do programa\nEscolha: ";
+    cout << "\nMenu de Opções:" << endl;
+    cout << "\t1. Listagem" << endl;
+    cout << "\t2. Cadastros" << endl;
+    cout << "\t3. Devolução de empréstimo" << endl;
+    cout << "\t4. Exclusão de dados" << endl;
+    cout << "\t5. Relatórios" << endl;
+    cout << "\t6. Sair do programa" << endl;
+    cout << "Escolha: ";
 }
 
 int main()
@@ -501,7 +623,12 @@ int main()
         {
             while (op != 4)
             {
-                cout << "\nListagem:\n\t1. Livros\n\t2. Associados\n\t3. Empréstimos\n\t4. Voltar ao menu anterior\nEscolha: ";
+                cout << "Listagem: " << endl;
+                cout << "\t1. Livros" << endl;
+                cout << "\t2. Associados" << endl;
+                cout << "\t3. Empréstimos" << endl;
+                cout << "\t4. Voltar ao menu anterior" << endl;
+                cout << "Escolha: ";
                 cin >> op;
 
                 clear();
@@ -524,7 +651,13 @@ int main()
         {
             while (op != 4)
             {
-                cout << "\nCadastros:\n\t1. Livros\n\t2. Associados\n\t3. Empréstimos\n\t4. Voltar ao menu anterior\nEscolha: ";
+                cout << "\nCadastros:" << endl;
+                cout << "\t1. Livros" << endl;
+                cout << "\t2. Associados" << endl;
+                cout << "\t3. Empréstimos" << endl;
+                cout << "\t4. Voltar ao menu anterior" << endl;
+                cout << "Escolha: ";
+                
                 cin >> op;
 
                 if (op == 1)
@@ -549,7 +682,11 @@ int main()
         {
             while (op != 3)
             {
-                cout << "Excluir:\n\t1. Livros\n\t2. Associados\n\t3. Voltar ao menu anterior\nEscolha: ";
+                cout << "Excluir: " << endl;
+                cout << "\t1. Livros" << endl;
+                cout << "\t2. Associados" << endl;
+                cout << "\t3. Voltar ao menu anterior" << endl;
+                cout << "Escolha: ";
                 cin >> op;
 
                 clear();
@@ -565,6 +702,34 @@ int main()
             }
         }
         else if (op == 5)
+        {
+            Relatorio *relatorio = new Relatorio(db);
+
+            cout << "Informe o relatório a ser apresentado: " << endl;
+            cout << "\t1 - Relatório de Livros mais Emprestados" << endl;
+            cout << "\t2 - Relatório de Associados com mais Empréstimos" << endl;
+            cout << "Escolha: ";
+
+            cin >> op;
+
+            clear();
+
+            if (op == 1)
+            {
+                cout << "Relatório dos 10 livros mais emprestados." << endl << endl;
+                relatorio->LivrosMaisEmprestados();
+            }
+            else if (op == 2)
+            {
+                cout << "Relatório dos 10 associados com mais empréstimos." << endl << endl;
+                relatorio->AssociadosMaisEmprestimos();
+            }
+            else
+            {
+                cout << "Opção inválida";
+            }
+        }
+        else if (op == 6)
         {
             cout << "Saindo do programa. Agradecomos o seu uso.\n";
             return 0;
